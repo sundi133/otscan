@@ -150,6 +150,53 @@ class TestModbusScanner:
         result = scanner.probe("192.0.2.1", 502)  # RFC 5737 test address
         assert not result.is_open
 
+    def test_parse_device_id_response(self):
+        """Test FC 0x2B response parsing correctly extracts vendor/product/revision."""
+        scanner = ModbusScanner()
+        # Build a realistic MEI response like the simulator sends
+        objects = (
+            b"\x00\x05OTSim"  # object 0: vendor_name
+            b"\x01\x06SimPLC"  # object 1: product_code
+            b"\x02\x031.0"  # object 2: major_minor_revision
+        )
+        # PDU: FC(0x2B) + MEI(0x0E) + ReadDevIdCode(0x01) + Conformity(0x01)
+        #      + MoreFollows(0x00) + NextObjId(0x00) + NumObjects(0x03) + objects
+        pdu = bytes([0x2B, 0x0E, 0x01, 0x01, 0x00, 0x00, 0x03]) + objects
+        # MBAP header: transaction_id(2) + protocol_id(2) + length(2) + unit_id(1)
+        mbap = struct.pack(">HHHB", 1, 0, len(pdu) + 1, 0)
+        data = mbap + pdu
+
+        info = scanner._parse_device_id_response(data)
+        assert info["vendor_name"] == "OTSim"
+        assert info["product_code"] == "SimPLC"
+        assert info["major_minor_revision"] == "1.0"
+
+    def test_identify_extracts_device_info(self):
+        """Test that identify() populates DeviceInfo from FC 0x2B response."""
+        scanner = ModbusScanner(timeout=0.1)
+        # Build FC 0x2B response
+        objects = (
+            b"\x00\x07Siemens"  # vendor
+            b"\x01\x03S7-"  # product code
+            b"\x02\x055.4.0"  # revision
+            b"\x04\x08S7-1200F"  # product name (obj 0x04)
+        )
+        pdu = bytes([0x2B, 0x0E, 0x01, 0x01, 0x00, 0x00, 0x04]) + objects
+        mbap = struct.pack(">HHHB", 1, 0, len(pdu) + 1, 0)
+        fc2b_response = mbap + pdu
+
+        # FC 0x11 Report Slave ID - exception response (not supported)
+        slave_pdu = bytes([0x91, 0x01])  # exception
+        slave_mbap = struct.pack(">HHHB", 2, 0, len(slave_pdu) + 1, 0)
+        slave_response = slave_mbap + slave_pdu
+
+        scanner._tcp_send_recv = MagicMock(side_effect=[fc2b_response, slave_response])
+        result = scanner.identify("10.0.0.1", 502)
+        assert result.is_identified
+        assert result.device.vendor == "Siemens"
+        assert result.device.model == "S7-1200F"
+        assert result.device.firmware == "5.4.0"
+
     def test_assess_returns_vulnerabilities(self):
         scanner = ModbusScanner(timeout=0.1)
         # Mock _tcp_send_recv to return None (no connection)

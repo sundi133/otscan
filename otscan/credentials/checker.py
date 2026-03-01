@@ -127,29 +127,82 @@ class CredentialChecker:
         return vulns
 
     def check_http_default_creds(self, target: str, port: int = 80) -> list[Vulnerability]:
-        """Check HTTP basic auth for default credentials."""
+        """Check HTTP for default credentials with false-positive reduction.
+
+        Strategy:
+        1. First request WITHOUT auth — check if page is open (no auth required)
+        2. If open, fingerprint the vendor from response body
+        3. If auth required (401), try default creds only for detected/all vendors
+        4. Deduplicate: only report unique username/password pairs, not per-vendor
+        """
         vulns = []
-        creds = get_credentials_for_port(port)
-        http_creds = [c for c in creds if c.protocol == "http"]
-        for cred in http_creds:
-            if self._http_basic_auth_check(target, port, cred.username, cred.password):
-                vulns.append(Vulnerability(
-                    title=f"Default HTTP credentials: {cred.vendor} {cred.product}",
-                    severity=Severity.CRITICAL,
-                    protocol="HTTP",
-                    target=target,
-                    port=port,
-                    description=(
-                        f"Web interface accepts default credentials "
-                        f"({cred.username}/{cred.password}) for "
-                        f"{cred.vendor} {cred.product}."
-                    ),
-                    remediation=(
-                        "Change default web interface credentials immediately. "
-                        "Implement account lockout policies."
-                    ),
-                    metadata={"vendor": cred.vendor, "product": cred.product},
-                ))
+
+        # Step 1: Check without authentication
+        no_auth_status, no_auth_body = self._http_get(target, port)
+        if no_auth_status is None:
+            return vulns  # Can't connect
+
+        # Step 2: If the server returns 200 without auth, it's open — fingerprint it
+        if no_auth_status == 200:
+            vendor = self._fingerprint_http_vendor(no_auth_body)
+            vulns.append(Vulnerability(
+                title=f"Web HMI accessible without authentication{f' ({vendor})' if vendor else ''}",
+                severity=Severity.CRITICAL,
+                protocol="HTTP",
+                target=target,
+                port=port,
+                description=(
+                    "Web interface is accessible without any authentication. "
+                    f"Detected vendor: {vendor or 'Unknown'}. "
+                    "An attacker can view and modify device configuration."
+                ),
+                remediation="Enable HTTP authentication on the web interface immediately.",
+                metadata={"vendor": vendor} if vendor else {},
+            ))
+            return vulns  # No need to test creds if it's fully open
+
+        # Step 3: Server requires auth (401/403) — try default creds
+        if no_auth_status in (401, 403):
+            creds = get_credentials_for_port(port)
+            http_creds = [c for c in creds if c.protocol == "http"]
+
+            # Deduplicate by (username, password) pair
+            seen_pairs: set[tuple[str, str]] = set()
+            for cred in http_creds:
+                pair = (cred.username, cred.password)
+                if pair in seen_pairs:
+                    continue
+                seen_pairs.add(pair)
+
+                if self._http_basic_auth_check(target, port, cred.username, cred.password):
+                    # Find all vendors using this credential pair
+                    matching_vendors = [
+                        f"{c.vendor} {c.product}" for c in http_creds
+                        if c.username == cred.username and c.password == cred.password
+                    ]
+                    vulns.append(Vulnerability(
+                        title=(
+                            f"Default HTTP credentials accepted: "
+                            f"{cred.username}/{cred.password}"
+                        ),
+                        severity=Severity.CRITICAL,
+                        protocol="HTTP",
+                        target=target,
+                        port=port,
+                        description=(
+                            f"Web interface accepts default credentials "
+                            f"'{cred.username}'/'{cred.password}'. "
+                            f"Common on: {', '.join(matching_vendors[:5])}."
+                        ),
+                        remediation=(
+                            "Change default web interface credentials immediately. "
+                            "Implement account lockout policies."
+                        ),
+                        metadata={"username": cred.username, "vendors": matching_vendors},
+                    ))
+                    # Stop after first working cred pair — don't spam
+                    break
+
         return vulns
 
     def check_mqtt(self, target: str, port: int = 1883) -> list[Vulnerability]:
@@ -175,10 +228,13 @@ class CredentialChecker:
         return vulns
 
     def check_all_services(self, target: str, open_ports: list[int]) -> list[Vulnerability]:
-        """Run all credential checks against a target based on open ports."""
+        """Run all credential checks against a target based on open ports.
+
+        SNMP (UDP 161) is always checked since TCP port scan can't detect it.
+        """
         vulns = []
-        if 161 in open_ports:
-            vulns.extend(self.check_snmp(target, 161))
+        # SNMP is UDP — always try it since TCP scan won't find it
+        vulns.extend(self.check_snmp(target, 161))
         if 21 in open_ports:
             vulns.extend(self.check_ftp_anonymous(target, 21))
         if 23 in open_ports:
@@ -293,31 +349,62 @@ class CredentialChecker:
             pass
         return None
 
+    def _http_get(
+        self, target: str, port: int, auth: str | None = None
+    ) -> tuple[int | None, str]:
+        """Send HTTP GET and return (status_code, body). Returns (None, '') on failure."""
+        headers = f"GET / HTTP/1.1\r\nHost: {target}\r\nConnection: close\r\n"
+        if auth:
+            headers += f"Authorization: Basic {auth}\r\n"
+        headers += "\r\n"
+
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(self.timeout)
+            sock.connect((target, port))
+            sock.sendall(headers.encode())
+            chunks = []
+            while True:
+                try:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    if len(b"".join(chunks)) > 16384:
+                        break
+                except socket.timeout:
+                    break
+            sock.close()
+            response = b"".join(chunks).decode("ascii", errors="replace")
+            # Parse status code
+            status_line = response.split("\r\n", 1)[0]
+            parts = status_line.split(" ", 2)
+            if len(parts) >= 2 and parts[1].isdigit():
+                return int(parts[1]), response
+            return None, response
+        except (socket.timeout, ConnectionRefusedError, OSError):
+            return None, ""
+
     def _http_basic_auth_check(
         self, target: str, port: int, username: str, password: str
     ) -> bool:
         """Check HTTP basic auth with given credentials."""
         import base64
         auth = base64.b64encode(f"{username}:{password}".encode()).decode()
-        request = (
-            f"GET / HTTP/1.1\r\n"
-            f"Host: {target}\r\n"
-            f"Authorization: Basic {auth}\r\n"
-            f"Connection: close\r\n"
-            f"\r\n"
-        )
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(self.timeout)
-            sock.connect((target, port))
-            sock.sendall(request.encode())
-            response = sock.recv(4096)
-            sock.close()
-            resp_str = response.decode("ascii", errors="replace")
-            # 200 OK or 302/301 redirect (successful login often redirects)
-            return " 200 " in resp_str[:50] or " 302 " in resp_str[:50]
-        except (socket.timeout, ConnectionRefusedError, OSError):
+        status, body = self._http_get(target, port, auth=auth)
+        if status is None:
             return False
+        # Only count as success if we get 200/302 WITH the creds
+        # AND the no-auth request would give 401/403
+        return status in (200, 301, 302)
+
+    def _fingerprint_http_vendor(self, response_body: str) -> str | None:
+        """Detect OT vendor from HTTP response content."""
+        body_lower = response_body.lower()
+        for keyword, vendor in _OT_WEB_SIGNATURES.items():
+            if keyword in body_lower:
+                return vendor
+        return None
 
     def _mqtt_connect_no_auth(self, target: str, port: int) -> bool:
         """Attempt MQTT CONNECT without credentials."""
@@ -350,3 +437,35 @@ class CredentialChecker:
         except (socket.timeout, ConnectionRefusedError, OSError):
             pass
         return False
+
+
+# OT vendor signatures in HTTP response bodies
+_OT_WEB_SIGNATURES = {
+    "simatic": "Siemens",
+    "siemens": "Siemens",
+    "scalance": "Siemens",
+    "schneider": "Schneider Electric",
+    "modicon": "Schneider Electric",
+    "vijeo": "Schneider Electric",
+    "rockwell": "Rockwell Automation",
+    "allen-bradley": "Rockwell Automation",
+    "factorytalk": "Rockwell Automation",
+    "honeywell": "Honeywell",
+    "experion": "Honeywell",
+    "yokogawa": "Yokogawa",
+    "centum": "Yokogawa",
+    "emerson": "Emerson",
+    "deltav": "Emerson",
+    "abb": "ABB",
+    "tridium": "Tridium",
+    "niagara": "Tridium",
+    "moxa": "Moxa",
+    "beckhoff": "Beckhoff",
+    "twincat": "Beckhoff",
+    "wago": "WAGO",
+    "phoenix contact": "Phoenix Contact",
+    "red lion": "Red Lion",
+    "omron": "Omron",
+    "mitsubishi": "Mitsubishi",
+    "melsec": "Mitsubishi",
+}

@@ -98,12 +98,10 @@ class ModbusScanner(BaseProtocolScanner):
     def _parse_device_id_response(self, data: bytes) -> dict[str, str]:
         """Parse MEI Read Device Identification response."""
         info = {}
-        if len(data) < 9:
+        if len(data) < 14:
             return info
-        # Skip MBAP header (7 bytes) + FC (1 byte) + MEI type (1 byte)
-        offset = 9
-        if len(data) < offset + 4:
-            return info
+        # Skip MBAP header (7) + FC (1) + MEI type (1) + Read Device ID code (1)
+        offset = 10
         # conformity_level, more_follows, next_object_id, number_of_objects
         if len(data) < offset + 4:
             return info
