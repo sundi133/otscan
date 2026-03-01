@@ -19,6 +19,9 @@ from otscan.discovery.network import (
     NetworkDiscovery,
     expand_targets,
 )
+from otscan.credentials.checker import CredentialChecker
+from otscan.cve.database import lookup_cves
+from otscan.services.detector import ServiceDetector
 
 
 @dataclass
@@ -36,6 +39,9 @@ class ScanSummary:
     info_count: int = 0
     scan_duration: float = 0.0
     protocols_found: list[str] = field(default_factory=list)
+    default_creds_found: int = 0
+    cves_matched: int = 0
+    services_detected: int = 0
 
 
 @dataclass
@@ -59,10 +65,16 @@ class OTScanner:
         timeout: float = 5.0,
         max_workers: int = 10,
         protocols: Optional[list[str]] = None,
+        check_creds: bool = True,
+        check_cves: bool = True,
+        check_services: bool = True,
     ):
         self.mode = mode
         self.timeout = timeout
         self.max_workers = max_workers
+        self.check_creds = check_creds
+        self.check_cves = check_cves
+        self.check_services = check_services
 
         # Initialize protocol scanners
         self.scanners: list[BaseProtocolScanner] = []
@@ -79,6 +91,9 @@ class OTScanner:
             max_workers=max_workers,
             mode=mode,
         )
+
+        self.cred_checker = CredentialChecker(timeout=timeout)
+        self.service_detector = ServiceDetector(timeout=timeout)
 
     def scan(
         self,
@@ -106,7 +121,7 @@ class OTScanner:
             targets, progress_callback=progress_callback
         )
 
-        # Aggregate results
+        # Aggregate results and run additional checks
         result.summary.hosts_alive = len(result.hosts)
         protocols_found = set()
 
@@ -118,6 +133,45 @@ class OTScanner:
 
                 for vuln in scan_result.vulnerabilities:
                     result.all_vulnerabilities.append(vuln)
+
+            # --- Service detection ---
+            if self.check_services:
+                service_vulns = self.service_detector.assess_services(
+                    host.ip, host.open_ports
+                )
+                for sv in service_vulns:
+                    result.all_vulnerabilities.append(sv)
+                result.summary.services_detected += len(service_vulns)
+
+            # --- Default credential checks (active mode only) ---
+            if self.check_creds and self.mode == ScanMode.ACTIVE:
+                cred_vulns = self.cred_checker.check_all_services(
+                    host.ip, host.open_ports
+                )
+                for cv in cred_vulns:
+                    result.all_vulnerabilities.append(cv)
+                result.summary.default_creds_found += len(cred_vulns)
+
+            # --- CVE mapping ---
+            if self.check_cves:
+                for scan_result in host.scan_results:
+                    if scan_result.device and scan_result.is_identified:
+                        d = scan_result.device
+                        cve_entries = lookup_cves(d.vendor, d.model, d.firmware)
+                        for entry in cve_entries:
+                            cve_vuln = Vulnerability(
+                                title=entry.title,
+                                severity=entry.severity,
+                                protocol=scan_result.protocol,
+                                target=host.ip,
+                                port=scan_result.port,
+                                description=entry.description,
+                                remediation=entry.remediation,
+                                cve=entry.cve_id,
+                                metadata={"cvss": entry.cvss},
+                            )
+                            result.all_vulnerabilities.append(cve_vuln)
+                            result.summary.cves_matched += 1
 
         # Count by severity
         for vuln in result.all_vulnerabilities:

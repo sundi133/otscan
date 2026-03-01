@@ -9,6 +9,10 @@ from otscan.protocols.s7comm import S7CommScanner
 from otscan.protocols.hartip import HARTIPScanner
 from otscan.protocols.iec61850 import IEC61850Scanner
 from otscan.protocols.profinet import ProfinetScanner
+from otscan.protocols.iec104 import IEC104Scanner
+from otscan.protocols.fins import FINSScanner
+from otscan.protocols.codesys import CODESYSScanner
+from otscan.protocols.niagara_fox import NiagaraFoxScanner
 
 ALL_SCANNERS = [
     ModbusScanner,
@@ -20,6 +24,10 @@ ALL_SCANNERS = [
     HARTIPScanner,
     IEC61850Scanner,
     ProfinetScanner,
+    IEC104Scanner,
+    FINSScanner,
+    CODESYSScanner,
+    NiagaraFoxScanner,
 ]
 
 __all__ = [
@@ -32,5 +40,9 @@ __all__ = [
     "HARTIPScanner",
     "IEC61850Scanner",
     "ProfinetScanner",
+    "IEC104Scanner",
+    "FINSScanner",
+    "CODESYSScanner",
+    "NiagaraFoxScanner",
     "ALL_SCANNERS",
 ]

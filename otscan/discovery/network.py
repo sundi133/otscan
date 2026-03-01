@@ -112,12 +112,15 @@ def resolve_hostname(ip: str) -> Optional[str]:
 
 # Common OT/ICS ports and their associated protocols
 OT_PORTS = {
+    # --- Core ICS protocols ---
     102: "S7comm / IEC 61850 MMS",
     502: "Modbus TCP",
     2222: "EtherNet/IP (alt)",
+    2404: "IEC 60870-5-104",
     4840: "OPC UA",
     4843: "OPC UA (TLS)",
     5094: "HART-IP",
+    9600: "OMRON FINS",
     18245: "GE SRTP",
     20000: "DNP3",
     34962: "PROFINET RT",
@@ -125,16 +128,30 @@ OT_PORTS = {
     34964: "PROFINET DCP",
     44818: "EtherNet/IP",
     47808: "BACnet/IP",
+    # --- Vendor-specific ---
+    789: "Crimson v3 (Red Lion)",
     1089: "FF HSE",
     1090: "FF HSE",
     1091: "FF HSE",
-    2404: "IEC 60870-5-104",
+    1911: "Niagara Fox",
+    1962: "PCWorx (Phoenix Contact)",
+    2455: "CODESYS V3",
     4000: "Emerson ROC",
-    4911: "Niagara Fox",
-    9600: "OMRON FINS",
-    1962: "PCWorx",
-    789: "Crimson v3",
-    2455: "WAGO CoDeSys",
+    4911: "Niagara Fox (TLS)",
+    5007: "Mitsubishi MELSEC-Q",
+    # --- Common services on OT networks ---
+    21: "FTP",
+    22: "SSH",
+    23: "Telnet",
+    80: "HTTP",
+    161: "SNMP",
+    443: "HTTPS",
+    1883: "MQTT",
+    3389: "RDP",
+    5900: "VNC",
+    8080: "HTTP-Alt",
+    8443: "HTTPS-Alt",
+    8883: "MQTT-TLS",
 }
 
 
