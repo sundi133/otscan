@@ -41,16 +41,38 @@ OT/ICS/SCADA Network Security Scanner — discover, identify, and assess industr
 - GOOSE/SV multicast injection risk (IEC 61850)
 - DCP configuration exposure (PROFINET)
 
-## Installation
+## Quick Start
+
+### Prerequisites
+
+- Python 3.9+
+- pip
+
+### Installation
 
 ```bash
+# Clone the repository
+git clone https://github.com/sundi133/otscan.git
+cd otscan
+
+# Install core package
 pip install -e .
+
+# Or install with all optional protocol libraries
+pip install -e ".[full]"
+
+# For development (includes pytest, mypy, ruff)
+pip install -e ".[dev]"
 ```
 
-For development:
+### Verify Installation
 
 ```bash
-pip install -e ".[dev]"
+# Check CLI is available
+otscan --version
+
+# List all supported protocols
+otscan list-protocols
 ```
 
 ## Usage
@@ -67,14 +89,23 @@ otscan scan 192.168.1.0/24
 # Scan an IP range
 otscan scan 192.168.1.1-192.168.1.50
 
+# Comma-separated targets
+otscan scan 10.0.0.1,10.0.0.2,10.0.0.3
+
 # Scan specific protocols only
 otscan scan 10.0.0.0/24 --protocol "Modbus TCP" --protocol "S7comm"
 
 # Active mode scan with HTML report
 otscan scan 10.0.0.1 --mode active --format html -o report.html
 
-# Passive mode (no active probes, just port scanning)
+# Passive mode (port scanning only, no protocol probes)
 otscan scan 10.0.0.0/24 --mode passive
+
+# Custom timeout and worker count
+otscan scan 10.0.0.0/24 --timeout 10 --workers 20
+
+# CSV output
+otscan scan 192.168.1.0/24 --format csv -o vulnerabilities.csv
 ```
 
 ### Single Protocol Probe
@@ -88,12 +119,71 @@ otscan probe 10.0.0.1 102 S7comm
 
 # Probe EtherNet/IP
 otscan probe 10.0.0.5 44818 "EtherNet/IP"
+
+# Probe BACnet
+otscan probe 10.0.0.10 47808 "BACnet/IP"
+
+# Probe with active mode and longer timeout
+otscan probe 10.0.0.1 502 "Modbus TCP" --mode active --timeout 10
 ```
 
 ### List Supported Protocols
 
 ```bash
 otscan list-protocols
+```
+
+### Using as a Python Library
+
+```python
+from otscan.scanner import OTScanner
+from otscan.protocols.base import ScanMode
+
+# Create scanner
+scanner = OTScanner(
+    mode=ScanMode.SAFE,
+    timeout=5.0,
+    protocols=["Modbus TCP", "S7comm"],
+)
+
+# Scan a target
+result = scanner.scan("192.168.1.0/24")
+
+# Access results
+print(f"Hosts found: {result.summary.hosts_alive}")
+print(f"Devices identified: {result.summary.devices_identified}")
+print(f"Vulnerabilities: {result.summary.total_vulnerabilities}")
+
+for host in result.hosts:
+    for sr in host.scan_results:
+        if sr.device:
+            print(f"  {sr.device.ip}:{sr.device.port} - {sr.device.vendor} {sr.device.model}")
+        for vuln in sr.vulnerabilities:
+            print(f"    [{vuln.severity.value}] {vuln.title}")
+
+# Probe a single target
+result = scanner.scan_single("192.168.1.1", 502, "Modbus TCP")
+```
+
+### CLI Options Reference
+
+```
+otscan scan [OPTIONS] TARGET
+
+Options:
+  --mode [passive|safe|active]  Scanning mode (default: safe)
+  --timeout FLOAT               Connection timeout in seconds (default: 5.0)
+  --workers INTEGER             Max concurrent workers (default: 10)
+  --protocol TEXT               Specific protocol(s) to scan (repeatable)
+  -o, --output TEXT             Output file path
+  --format [json|html|csv]      Output format (default: json)
+  --no-banner                   Suppress the banner
+
+otscan probe [OPTIONS] TARGET PORT PROTOCOL
+
+Options:
+  --timeout FLOAT               Connection timeout in seconds (default: 5.0)
+  --mode [passive|safe|active]  Scanning mode (default: safe)
 ```
 
 ## Scan Modes
@@ -135,10 +225,20 @@ otscan/
     └── helpers.py       # Utility functions
 ```
 
-## Testing
+## Running Tests
 
 ```bash
+# Run all tests
 pytest tests/ -v
+
+# Run with coverage
+pytest tests/ -v --cov=otscan --cov-report=term-missing
+
+# Run a specific test class
+pytest tests/test_scanner.py::TestModbusScanner -v
+
+# Run a single test
+pytest tests/test_scanner.py::TestExpandTargets::test_cidr_24 -v
 ```
 
 ## License
