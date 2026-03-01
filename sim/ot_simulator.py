@@ -590,23 +590,102 @@ def start_snmp(port=161):
 
 
 # ---------------------------------------------------------------------------
+# CODESYS V3 simulator (port 2455)
+# ---------------------------------------------------------------------------
+def codesys_handler(conn, addr):
+    try:
+        data = conn.recv(4096)
+        if data and len(data) >= 2 and data[0:2] == b"\xbb\xbb":
+            # Respond with CODESYS V3 device info
+            device_name = b"OTSim WAGO PFC200\x00"
+            resp = (
+                b"\xbb\xbb"  # Magic
+                + struct.pack("<HI", 0x0000, 0x00000001)  # proto ID, session
+                + bytes([0x01, 0x01])  # service group, service
+                + struct.pack("<I", 0x00000000)  # tag
+                + struct.pack("<H", len(device_name))  # data length
+                + device_name
+            )
+            conn.sendall(resp)
+            log("CODESYS", f"Device info response to {addr[0]}")
+    except OSError:
+        pass
+    finally:
+        conn.close()
+
+
+def start_codesys(port=2455):
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("0.0.0.0", port))
+    srv.listen(5)
+    log("CODESYS", f"Listening on port {port}")
+    while True:
+        conn, addr = srv.accept()
+        threading.Thread(target=codesys_handler, args=(conn, addr), daemon=True).start()
+
+
+# ---------------------------------------------------------------------------
+# Niagara Fox simulator (port 1911)
+# ---------------------------------------------------------------------------
+def niagara_fox_handler(conn, addr):
+    try:
+        data = conn.recv(4096)
+        if data and b"fox hello" in data.lower():
+            resp = (
+                "fox a 1 -1 fox hello\n"
+                "{\n"
+                "fox.version=s:1.0\n"
+                "hostName=s:JACE-8000-SIM\n"
+                "hostAddress=s:172.25.0.10\n"
+                "osName=s:QNX\n"
+                "osVersion=s:6.5.0\n"
+                "vmVersion=s:1.8.0_151\n"
+                "brandId=s:Tridium\n"
+                "app.name=s:station\n"
+                "app.version=s:4.8.0.110\n"
+                "}\n"
+                ";;;\n"
+            )
+            conn.sendall(resp.encode("ascii"))
+            log("Niagara Fox", f"Fox hello response to {addr[0]}")
+    except OSError:
+        pass
+    finally:
+        conn.close()
+
+
+def start_niagara_fox(port=1911):
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("0.0.0.0", port))
+    srv.listen(5)
+    log("Niagara Fox", f"Listening on port {port}")
+    while True:
+        conn, addr = srv.accept()
+        threading.Thread(target=niagara_fox_handler, args=(conn, addr), daemon=True).start()
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 SERVICES = [
-    ("Modbus TCP (502)",      start_modbus,   502),
-    ("OPC UA (4840)",         start_opcua,    4840),
-    ("EtherNet/IP (44818)",   start_enip,     44818),
-    ("S7comm (102)",          start_s7comm,   102),
-    ("DNP3 (20000)",          start_dnp3,     20000),
-    ("BACnet/IP (47808 UDP)", start_bacnet,   47808),
-    ("IEC 104 (2404)",        start_iec104,   2404),
-    ("FINS (9600)",           start_fins,     9600),
-    ("MQTT (1883)",           start_mqtt,     1883),
-    ("FTP (21)",              start_ftp,      21),
-    ("Telnet (23)",           start_telnet,   23),
-    ("HTTP HMI (80)",         start_http,     80),
-    ("VNC (5900)",            start_vnc,      5900),
-    ("SNMP (161 UDP)",        start_snmp,     161),
+    ("Modbus TCP (502)",      start_modbus,       502),
+    ("OPC UA (4840)",         start_opcua,        4840),
+    ("EtherNet/IP (44818)",   start_enip,         44818),
+    ("S7comm (102)",          start_s7comm,       102),
+    ("DNP3 (20000)",          start_dnp3,         20000),
+    ("BACnet/IP (47808 UDP)", start_bacnet,       47808),
+    ("IEC 104 (2404)",        start_iec104,       2404),
+    ("FINS (9600)",           start_fins,         9600),
+    ("CODESYS (2455)",        start_codesys,      2455),
+    ("Niagara Fox (1911)",    start_niagara_fox,  1911),
+    ("MQTT (1883)",           start_mqtt,         1883),
+    ("FTP (21)",              start_ftp,          21),
+    ("Telnet (23)",           start_telnet,       23),
+    ("HTTP HMI (80)",         start_http,         80),
+    ("VNC (5900)",            start_vnc,          5900),
+    ("SNMP (161 UDP)",        start_snmp,         161),
 ]
 
 
@@ -615,7 +694,7 @@ def main():
     print("  OTScan Test Lab — Simulated OT/ICS Devices")
     print("=" * 60)
     print()
-    print("  Starting 14 simulated services...")
+    print("  Starting 16 simulated services...")
     print()
 
     threads = []
