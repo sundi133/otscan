@@ -1,0 +1,81 @@
+services:
+  # Run the full test suite
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["python", "-m", "pytest"]
+    command: ["tests/", "-v", "--tb=short"]
+    network_mode: none
+
+  # Run tests with coverage report
+  test-coverage:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["python", "-m", "pytest"]
+    command: ["tests/", "-v", "--cov=otscan", "--cov-report=term-missing"]
+    network_mode: none
+
+  # Interactive shell for manual testing
+  shell:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["/bin/bash"]
+    stdin_open: true
+    tty: true
+    network_mode: host
+
+  # Scan a target (pass TARGET via environment)
+  scan:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["scan", "${TARGET:-192.168.1.0/24}", "--mode", "${MODE:-safe}"]
+    network_mode: host
+
+  # List all supported protocols
+  list-protocols:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["list-protocols"]
+    network_mode: none
+
+  # Simulated OT device for testing (Modbus TCP on port 502)
+  modbus-sim:
+    image: python:3.11-slim
+    command: >
+      bash -c "pip install pymodbus &&
+      python -c \"
+      from pymodbus.server import StartTcpServer
+      from pymodbus.datastore import ModbusSequentialDataBlock, ModbusSlaveContext, ModbusServerContext
+      store = ModbusSlaveContext(
+          di=ModbusSequentialDataBlock(0, [0]*100),
+          co=ModbusSequentialDataBlock(0, [0]*100),
+          hr=ModbusSequentialDataBlock(0, [0]*100),
+          ir=ModbusSequentialDataBlock(0, [0]*100))
+      context = ModbusServerContext(slaves=store, single=True)
+      print('Modbus simulator running on port 502...')
+      StartTcpServer(context=context, address=('0.0.0.0', 502))
+      \""
+    ports:
+      - "502:502"
+    networks:
+      - otnet
+
+  # Scan the simulated devices
+  scan-sim:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["scan", "modbus-sim", "--mode", "active", "--protocol", "Modbus TCP"]
+    depends_on:
+      - modbus-sim
+    networks:
+      - otnet
+
+networks:
+  otnet:
+    driver: bridge
