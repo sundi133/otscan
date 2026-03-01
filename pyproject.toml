@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "otscan"
+version = "0.1.0"
+description = "OT/ICS/SCADA Network Security Scanner"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Information Technology",
+    "Topic :: Security",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "rich>=13.0.0",
+    "click>=8.1.0",
+    "jinja2>=3.1.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+full = [
+    "scapy>=2.5.0",
+    "pymodbus>=3.6.0",
+    "asyncua>=1.0.0",
+    "cryptography>=41.0.0",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "pytest-asyncio>=0.21",
+    "mypy>=1.5",
+    "ruff>=0.1.0",
+]
+
+[project.scripts]
+otscan = "otscan.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["otscan*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
