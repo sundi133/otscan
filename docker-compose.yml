@@ -1,4 +1,6 @@
 services:
+  # ===== Testing =====
+
   # Run the full test suite
   test:
     build:
@@ -27,14 +29,6 @@ services:
     tty: true
     network_mode: host
 
-  # Scan a target (pass TARGET via environment)
-  scan:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    command: ["scan", "${TARGET:-192.168.1.0/24}", "--mode", "${MODE:-safe}"]
-    network_mode: host
-
   # List all supported protocols
   list-protocols:
     build:
@@ -43,39 +37,78 @@ services:
     command: ["list-protocols"]
     network_mode: none
 
-  # Simulated OT device for testing (Modbus TCP on port 502)
-  modbus-sim:
-    image: python:3.11-slim
-    command: >
-      bash -c "pip install pymodbus &&
-      python -c \"
-      from pymodbus.server import StartTcpServer
-      from pymodbus.datastore import ModbusSequentialDataBlock, ModbusSlaveContext, ModbusServerContext
-      store = ModbusSlaveContext(
-          di=ModbusSequentialDataBlock(0, [0]*100),
-          co=ModbusSequentialDataBlock(0, [0]*100),
-          hr=ModbusSequentialDataBlock(0, [0]*100),
-          ir=ModbusSequentialDataBlock(0, [0]*100))
-      context = ModbusServerContext(slaves=store, single=True)
-      print('Modbus simulator running on port 502...')
-      StartTcpServer(context=context, address=('0.0.0.0', 502))
-      \""
-    ports:
-      - "502:502"
-    networks:
-      - otnet
+  # ===== Simulated OT Lab =====
 
-  # Scan the simulated devices
-  scan-sim:
+  # Full OT device simulator — 14 services on one container
+  # Ports: 21, 23, 80, 102, 161, 502, 1883, 2404, 4840, 5900, 9600, 20000, 44818, 47808
+  ot-lab:
     build:
       context: .
       dockerfile: Dockerfile
-    command: ["scan", "modbus-sim", "--mode", "active", "--protocol", "Modbus TCP"]
+    entrypoint: ["python", "sim/ot_simulator.py"]
+    networks:
+      otnet:
+        ipv4_address: 172.25.0.10
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1',502)); s.close()"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 3s
+
+  # Scan the simulated OT lab (all 13 protocols + credential checks)
+  scan-lab:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["scan", "172.25.0.10", "--mode", "active", "--timeout", "10", "--no-banner"]
     depends_on:
-      - modbus-sim
+      ot-lab:
+        condition: service_healthy
     networks:
       - otnet
+
+  # Scan lab with JSON report output
+  scan-lab-report:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["scan", "172.25.0.10", "--mode", "active", "--timeout", "10",
+              "--format", "json", "-o", "/reports/otscan_lab_report.json", "--no-banner"]
+    depends_on:
+      ot-lab:
+        condition: service_healthy
+    volumes:
+      - ./reports:/reports
+    networks:
+      - otnet
+
+  # Probe a single protocol on the lab
+  # Usage: docker compose run --rm probe-lab 502 "Modbus TCP"
+  probe-lab:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["otscan", "probe", "172.25.0.10"]
+    depends_on:
+      ot-lab:
+        condition: service_healthy
+    networks:
+      - otnet
+
+  # ===== Scan real targets =====
+
+  # Scan a target (pass TARGET via environment)
+  scan:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["scan", "${TARGET:-192.168.1.0/24}", "--mode", "${MODE:-safe}"]
+    network_mode: host
 
 networks:
   otnet:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.25.0.0/24
