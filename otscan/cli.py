@@ -71,7 +71,22 @@ def main():
     help="Output format (default: json)",
 )
 @click.option("--no-banner", is_flag=True, help="Suppress the banner")
-def scan(target, mode, timeout, workers, protocol, output, output_format, no_banner):
+@click.option(
+    "--analyze", is_flag=True,
+    help="Run AI-powered analysis on results using Anthropic Claude",
+)
+@click.option(
+    "--api-key", envvar="ANTHROPIC_API_KEY",
+    help="Anthropic API key (or set ANTHROPIC_API_KEY env var)",
+)
+@click.option(
+    "--model", "ai_model", default=None,
+    help="Claude model for analysis (default: claude-sonnet-4-6)",
+)
+def scan(
+    target, mode, timeout, workers, protocol, output, output_format, no_banner,
+    analyze, api_key, ai_model,
+):
     """Scan OT/ICS/SCADA targets for devices and vulnerabilities.
 
     TARGET can be a single IP, CIDR range, IP range, or comma-separated list.
@@ -79,7 +94,7 @@ def scan(target, mode, timeout, workers, protocol, output, output_format, no_ban
     \b
     Examples:
         otscan scan 192.168.1.1
-        otscan scan 192.168.1.0/24
+        otscan scan 192.168.1.0/24 --analyze --model claude-sonnet-4-6
         otscan scan 192.168.1.1-192.168.1.50
         otscan scan 10.0.0.1 --protocol "Modbus TCP" --protocol "S7comm"
     """
@@ -128,6 +143,10 @@ def scan(target, mode, timeout, workers, protocol, output, output_format, no_ban
     _display_summary(result)
     _display_hosts(result)
     _display_vulnerabilities(result)
+
+    # AI-powered analysis
+    if analyze:
+        _run_agentic_analysis(result, api_key, ai_model)
 
     # Generate report
     if output:
@@ -201,6 +220,76 @@ def probe(target, port, protocol, timeout, mode):
             if vuln.remediation:
                 console.print(f"    [cyan]Fix: {vuln.remediation}[/cyan]")
             console.print()
+
+
+@main.command()
+@click.argument("report_file", type=click.Path(exists=True))
+@click.option(
+    "--api-key", envvar="ANTHROPIC_API_KEY",
+    help="Anthropic API key (or set ANTHROPIC_API_KEY env var)",
+)
+@click.option(
+    "--model", "ai_model", default=None,
+    help="Claude model (default: claude-sonnet-4-6). "
+    "Options: claude-opus-4-6, claude-sonnet-4-6, claude-haiku-4-5-20251001",
+)
+@click.option("--question", "-q", help="Ask a specific question about the results")
+def analyze(report_file, api_key, ai_model, question):
+    """Run AI-powered analysis on a previous scan report (JSON).
+
+    Uses Anthropic Claude to provide risk scoring, attack path analysis,
+    and prioritized remediation recommendations.
+
+    \b
+    Setup:
+        export ANTHROPIC_API_KEY=sk-ant-api03-...
+    \b
+    Models:
+        claude-opus-4-6            Most capable, deep reasoning
+        claude-sonnet-4-6          Balanced speed + intelligence (default)
+        claude-haiku-4-5-20251001  Fastest, lowest cost
+    \b
+    Examples:
+        otscan analyze otscan_report.json
+        otscan analyze otscan_report.json --model claude-opus-4-6
+        otscan analyze otscan_report.json -q "What is the biggest risk?"
+    """
+    import json
+
+    from otscan.agentic.analyzer import AgenticAnalyzer, AgenticConfig
+
+    with open(report_file) as f:
+        report_data = json.load(f)
+
+    config = AgenticConfig(
+        api_key=api_key or "",
+        model=ai_model or "claude-sonnet-4-6",
+    )
+    if not config.api_key:
+        config = AgenticConfig.from_env(model=ai_model)
+    if not config.api_key:
+        console.print(
+            "[red]Anthropic API key required.[/red]\n"
+            "Set it via: export ANTHROPIC_API_KEY=sk-ant-api03-...\n"
+            "Or pass: --api-key sk-ant-api03-..."
+        )
+        sys.exit(1)
+
+    analyzer = AgenticAnalyzer(config=config)
+
+    # Convert flat report dict back to a lightweight object for the analyzer
+    report_obj = _report_dict_to_obj(report_data)
+
+    if question:
+        console.print(f"\n[cyan]Asking Claude ({config.model}):[/cyan] {question}\n")
+        with console.status("Thinking..."):
+            answer = analyzer.ask(report_obj, question)
+        console.print(Panel(answer, title="AI Analysis", border_style="cyan"))
+    else:
+        console.print(f"\n[cyan]Running AI analysis with {config.model}...[/cyan]")
+        with console.status("Analyzing scan results..."):
+            result = analyzer.analyze(report_obj)
+        _display_analysis(result)
 
 
 @main.command(name="list-protocols")
@@ -328,6 +417,133 @@ def _generate_report(result, output_path, output_format):
         path = generate_json_report(result, output_path)
 
     console.print(f"\n[green]Report saved to:[/green] {path}")
+
+
+def _run_agentic_analysis(result, api_key, ai_model):
+    """Run inline agentic analysis after a scan."""
+    from otscan.agentic.analyzer import AgenticAnalyzer, AgenticConfig
+
+    config = AgenticConfig(
+        api_key=api_key or "",
+        model=ai_model or "claude-sonnet-4-6",
+    )
+    if not config.api_key:
+        config = AgenticConfig.from_env(model=ai_model)
+    if not config.api_key:
+        console.print(
+            "\n[yellow]Skipping AI analysis: ANTHROPIC_API_KEY not set.[/yellow]"
+        )
+        return
+
+    console.print(f"\n[cyan]Running AI analysis with {config.model}...[/cyan]")
+    try:
+        analyzer = AgenticAnalyzer(config=config)
+        with console.status("Analyzing scan results..."):
+            analysis = analyzer.analyze(result)
+        _display_analysis(analysis)
+    except Exception as e:
+        console.print(f"\n[red]AI analysis failed: {e}[/red]")
+
+
+def _display_analysis(analysis):
+    """Display agentic analysis results."""
+    from rich.markdown import Markdown
+
+    console.print()
+    console.print(Panel(
+        f"[bold]Risk Score:[/bold] {analysis.risk_score}/10.0\n\n"
+        f"{analysis.summary}",
+        title="AI Security Assessment",
+        border_style="cyan",
+    ))
+
+    if analysis.attack_paths:
+        console.print("\n[bold cyan]Attack Paths:[/bold cyan]")
+        for i, path in enumerate(analysis.attack_paths, 1):
+            console.print(f"  {i}. {path}")
+
+    if analysis.prioritized_remediations:
+        console.print("\n[bold cyan]Prioritized Remediations:[/bold cyan]")
+        for i, fix in enumerate(analysis.prioritized_remediations, 1):
+            console.print(f"  {i}. {fix}")
+
+    console.print(
+        f"\n[dim]Model: {analysis.model_used} | "
+        f"Tokens: {analysis.tokens_used}[/dim]"
+    )
+
+
+class _ReportObj:
+    """Lightweight object to hold report data for the analyzer."""
+
+    def __init__(self, data):
+        self.scan_mode = data.get("scan_info", {}).get("mode", "safe")
+        self.hosts = []
+        self.all_vulnerabilities = []
+        self.summary = _SummaryObj(data.get("summary", {}))
+
+        for host_data in data.get("hosts", []):
+            self.hosts.append(_HostObj(host_data))
+
+
+class _SummaryObj:
+    def __init__(self, data):
+        self.targets_scanned = data.get("targets_scanned", 0)
+        self.hosts_alive = data.get("hosts_alive", 0)
+        self.devices_identified = data.get("devices_identified", 0)
+        self.total_vulnerabilities = data.get("total_vulnerabilities", 0)
+        sc = data.get("severity_counts", {})
+        self.critical_count = sc.get("critical", 0)
+        self.high_count = sc.get("high", 0)
+        self.medium_count = sc.get("medium", 0)
+        self.low_count = sc.get("low", 0)
+        self.info_count = sc.get("info", 0)
+        self.scan_duration = 0.0
+        self.protocols_found = data.get("protocols_found", [])
+
+
+class _HostObj:
+    def __init__(self, data):
+        self.ip = data.get("ip", "")
+        self.hostname = data.get("hostname", "")
+        self.open_ports = data.get("open_ports", [])
+        self.scan_results = []
+        for dev in data.get("devices", []):
+            self.scan_results.append(_ScanResultObj(dev, data.get("vulnerabilities", [])))
+
+
+class _ScanResultObj:
+    def __init__(self, device_data, vulns_data):
+        self.device = _DeviceObj(device_data) if device_data else None
+        self.is_identified = bool(device_data)
+        self.protocol = device_data.get("protocol", "") if device_data else ""
+        self.port = 0
+        self.vulnerabilities = [_VulnObj(v) for v in vulns_data]
+
+
+class _DeviceObj:
+    def __init__(self, data):
+        self.protocol = data.get("protocol", "")
+        self.vendor = data.get("vendor", "Unknown")
+        self.model = data.get("model", "Unknown")
+        self.firmware = data.get("firmware", "Unknown")
+        self.device_type = data.get("device_type", "Unknown")
+
+
+class _VulnObj:
+    def __init__(self, data):
+        self.title = data.get("title", "")
+        self.severity = Severity(data.get("severity", "info"))
+        self.protocol = data.get("protocol", "")
+        self.port = data.get("port", 0)
+        self.description = data.get("description", "")
+        self.remediation = data.get("remediation", "")
+        self.cve = data.get("cve", "")
+
+
+def _report_dict_to_obj(data):
+    """Convert a JSON report dict back to objects the analyzer can process."""
+    return _ReportObj(data)
 
 
 if __name__ == "__main__":
