@@ -80,6 +80,26 @@ Knowledge base for 8 wireless protocols found in OT environments:
 
 Includes known attacks, vulnerabilities, and required detection hardware for each.
 
+### AI-Powered Agentic Analysis
+
+Uses Anthropic Claude to provide intelligent analysis of scan results:
+
+| Feature | Description |
+|---------|-------------|
+| Risk Scoring | AI-generated 0-10 risk score based on findings and exploitability |
+| Attack Path Analysis | Identifies how an attacker could chain vulnerabilities to compromise OT systems |
+| Remediation Prioritization | Ordered action list considering OT constraints (uptime, legacy devices) |
+| Compliance Gap Detection | Maps findings to IEC 62443 / NIST SP 800-82 gaps |
+| Interactive Q&A | Ask follow-up questions about scan results |
+
+Supported Claude models:
+
+| Model | ID | Best For |
+|-------|-----|----------|
+| Opus 4.6 | `claude-opus-4-6` | Deep reasoning, complex analysis |
+| **Sonnet 4.6** | **`claude-sonnet-4-6`** | **Balanced speed + intelligence (default)** |
+| Haiku 4.5 | `claude-haiku-4-5-20251001` | Fastest, lowest cost |
+
 ### Capabilities
 
 | Capability | Description |
@@ -91,6 +111,7 @@ Includes known attacks, vulnerabilities, and required detection hardware for eac
 | CVE Mapping | Match identified devices to known ICS-CERT vulnerabilities |
 | Service Detection | Find exposed FTP, Telnet, RDP, VNC, MQTT, databases on OT networks |
 | Wireless/RF Awareness | Knowledge base for WirelessHART, Zigbee, BLE, LoRa, Wi-Fi assessment |
+| AI Analysis | Claude-powered risk scoring, attack path analysis, and remediation prioritization |
 | Safe Scanning Mode | Non-destructive read-only probes safe for production OT environments |
 | Multi-format Reporting | JSON, HTML, and CSV report generation |
 
@@ -130,6 +151,12 @@ pip install -e .
 
 # Or install with all optional protocol libraries
 pip install -e ".[full]"
+
+# Install with AI-powered agentic analysis (Anthropic Claude)
+pip install -e ".[agentic]"
+
+# Install everything
+pip install -e ".[full,agentic,dev]"
 
 # For development (includes pytest, mypy, ruff)
 pip install -e ".[dev]"
@@ -176,6 +203,40 @@ otscan scan 10.0.0.0/24 --timeout 10 --workers 20
 
 # CSV output
 otscan scan 192.168.1.0/24 --format csv -o vulnerabilities.csv
+```
+
+### AI-Powered Analysis
+
+Requires an Anthropic API key from https://console.anthropic.com/settings/keys.
+
+```bash
+# Set your API key (one-time setup)
+export ANTHROPIC_API_KEY=sk-ant-api03-your-key-here
+
+# Scan with inline AI analysis (uses claude-sonnet-4-6 by default)
+otscan scan 192.168.1.0/24 --analyze
+
+# Use a specific model
+otscan scan 10.0.0.0/24 --analyze --model claude-opus-4-6
+
+# Analyze a previously saved report
+otscan analyze otscan_report.json
+
+# Ask a specific question about scan results
+otscan analyze otscan_report.json -q "What is the most critical attack path?"
+
+# Use a faster/cheaper model for quick analysis
+otscan analyze otscan_report.json --model claude-haiku-4-5-20251001
+
+# Pass API key directly instead of env var
+otscan scan 10.0.0.1 --analyze --api-key sk-ant-api03-...
+```
+
+You can also override the default model via environment variable:
+
+```bash
+export OTSCAN_MODEL=claude-opus-4-6
+otscan scan 10.0.0.0/24 --analyze
 ```
 
 ### Single Protocol Probe
@@ -235,6 +296,36 @@ for host in result.hosts:
 result = scanner.scan_single("192.168.1.1", 502, "Modbus TCP")
 ```
 
+#### AI Analysis via Python
+
+```python
+from otscan.agentic.analyzer import AgenticAnalyzer, AgenticConfig
+
+# Configure with API key
+config = AgenticConfig(
+    api_key="sk-ant-api03-...",
+    model="claude-sonnet-4-6",  # or claude-opus-4-6, claude-haiku-4-5-20251001
+)
+
+# Or load from environment (ANTHROPIC_API_KEY, OTSCAN_MODEL)
+config = AgenticConfig.from_env()
+
+# Analyze scan results
+analyzer = AgenticAnalyzer(config=config)
+analysis = analyzer.analyze(result)
+
+print(f"Risk Score: {analysis.risk_score}/10")
+print(f"Summary: {analysis.summary}")
+for i, path in enumerate(analysis.attack_paths, 1):
+    print(f"Attack Path {i}: {path}")
+for i, fix in enumerate(analysis.prioritized_remediations, 1):
+    print(f"Remediation {i}: {fix}")
+
+# Ask a follow-up question
+answer = analyzer.ask(result, "Which devices are most at risk?")
+print(answer)
+```
+
 ### CLI Options Reference
 
 ```
@@ -248,6 +339,16 @@ Options:
   -o, --output TEXT             Output file path
   --format [json|html|csv]      Output format (default: json)
   --no-banner                   Suppress the banner
+  --analyze                     Run AI analysis on results using Anthropic Claude
+  --api-key TEXT                Anthropic API key (or set ANTHROPIC_API_KEY env var)
+  --model TEXT                  Claude model for analysis (default: claude-sonnet-4-6)
+
+otscan analyze [OPTIONS] REPORT_FILE
+
+Options:
+  --api-key TEXT                Anthropic API key (or set ANTHROPIC_API_KEY env var)
+  --model TEXT                  Claude model (claude-opus-4-6, claude-sonnet-4-6, claude-haiku-4-5-20251001)
+  -q, --question TEXT           Ask a specific question about the results
 
 otscan probe [OPTIONS] TARGET PORT PROTOCOL
 
@@ -276,6 +377,8 @@ Options:
 otscan/
 ├── cli.py                  # Click-based CLI interface
 ├── scanner.py              # Main orchestrator (integrates all modules)
+├── agentic/
+│   └── analyzer.py         # AI-powered analysis using Anthropic Claude
 ├── protocols/
 │   ├── base.py             # Base scanner class + data models
 │   ├── modbus.py           # Modbus TCP scanner
