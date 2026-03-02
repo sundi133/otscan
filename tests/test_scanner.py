@@ -903,3 +903,96 @@ class TestExpandedOTPorts:
         assert 1883 in OT_PORTS  # MQTT
         assert 3389 in OT_PORTS  # RDP
         assert 5900 in OT_PORTS  # VNC
+
+
+# --- Agentic analyzer tests ---
+
+
+class TestAgenticAnalyzer:
+    def test_config_defaults(self):
+        from otscan.agentic.analyzer import AgenticConfig, DEFAULT_MODEL, SUPPORTED_MODELS
+
+        config = AgenticConfig()
+        assert config.model == DEFAULT_MODEL
+        assert config.model == "claude-sonnet-4-6"
+        assert config.max_tokens == 4096
+        assert config.temperature == 0.2
+
+    def test_supported_models(self):
+        from otscan.agentic.analyzer import SUPPORTED_MODELS
+
+        assert "claude-opus-4-6" in SUPPORTED_MODELS
+        assert "claude-sonnet-4-6" in SUPPORTED_MODELS
+        assert "claude-haiku-4-5-20251001" in SUPPORTED_MODELS
+
+    def test_config_from_env(self):
+        from otscan.agentic.analyzer import AgenticConfig
+
+        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-test-123", "OTSCAN_MODEL": "claude-opus-4-6"}):
+            config = AgenticConfig.from_env()
+            assert config.api_key == "sk-test-123"
+            assert config.model == "claude-opus-4-6"
+
+    def test_config_from_env_model_override(self):
+        from otscan.agentic.analyzer import AgenticConfig
+
+        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-test", "OTSCAN_MODEL": "claude-opus-4-6"}):
+            config = AgenticConfig.from_env(model="claude-haiku-4-5-20251001")
+            assert config.model == "claude-haiku-4-5-20251001"
+
+    def test_analyzer_no_key_raises(self):
+        from otscan.agentic.analyzer import AgenticAnalyzer, AgenticConfig
+
+        analyzer = AgenticAnalyzer(config=AgenticConfig(api_key=""))
+        # Mock anthropic import so we can test the key check
+        mock_anthropic = MagicMock()
+        with patch.dict("sys.modules", {"anthropic": mock_anthropic}):
+            with pytest.raises(ValueError, match="API key is required"):
+                analyzer._get_client()
+
+    def test_analyzer_no_anthropic_package(self):
+        from otscan.agentic.analyzer import AgenticAnalyzer, AgenticConfig
+
+        analyzer = AgenticAnalyzer(config=AgenticConfig(api_key="sk-test"))
+        with patch.dict("sys.modules", {"anthropic": None}):
+            with pytest.raises(ImportError, match="anthropic package is required"):
+                analyzer._get_client()
+
+    def test_build_scan_context(self):
+        from otscan.agentic.analyzer import AgenticAnalyzer, AgenticConfig
+        from otscan.scanner import OTScanResult, ScanSummary
+
+        analyzer = AgenticAnalyzer(config=AgenticConfig(api_key="sk-test"))
+        result = OTScanResult()
+        result.summary = ScanSummary(
+            targets_scanned=5,
+            hosts_alive=2,
+            devices_identified=3,
+            total_vulnerabilities=10,
+            critical_count=2,
+            protocols_found=["Modbus TCP", "S7comm"],
+        )
+        context = analyzer._build_scan_context(result)
+        assert "Targets scanned: 5" in context
+        assert "Modbus TCP" in context
+        assert "Critical: 2" in context
+
+    def test_extract_json_direct(self):
+        from otscan.agentic.analyzer import _extract_json
+
+        data = _extract_json('{"risk_score": 7.5}')
+        assert data["risk_score"] == 7.5
+
+    def test_extract_json_fenced(self):
+        from otscan.agentic.analyzer import _extract_json
+
+        text = 'Here is the analysis:\n```json\n{"risk_score": 8.0}\n```\nDone.'
+        data = _extract_json(text)
+        assert data["risk_score"] == 8.0
+
+    def test_extract_json_no_json(self):
+        import json as json_mod
+        from otscan.agentic.analyzer import _extract_json
+
+        with pytest.raises(json_mod.JSONDecodeError):
+            _extract_json("no json here")
